@@ -6,8 +6,6 @@ import torch
 import torch.nn as nn
 from utils import randn_tensor
 
-
-
 class DDPMPipeline:
     def __init__(self, unet, scheduler, vae=None, class_embedder=None):
         self.unet = unet
@@ -90,54 +88,63 @@ class DDPMPipeline:
         )
         
         if classes is not None:
-            # TODO: get uncond classes
-            uncond_classes = None 
-            # TODO: get class embeddings from classes
-            class_embeds = None 
-            # TODO: get uncon class embeddings
-            uncond_embeds = None 
+            # the unconditional "class" is the extra index n_classes (one past the real labels)
+            # TODO (SOLVED): get uncond classes
+            uncond_classes = torch.full_like(classes, self.class_embedder.num_classes)
+            # TODO (SOLVED): get class embeddings from classes
+            class_embeds = self.class_embedder(classes) 
+            # TODO (SOLVED): get uncon class embeddings
+            uncond_embeds = self.class_embedder(uncond_classes) 
         
-        # TODO: starts with random noise
-        image = None # randn_tensor(image_shape, generator=generator, device=device)
+        # TODO (SOLVED): starts with random noise
+        image = randn_tensor(image_shape, generator=generator, device=device)
 
-        # TODO: set step values using set_timesteps of scheduler
-        self.scheduler = None
+        # TODO (SOLVED): set step values using set_timesteps of scheduler
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
         
-        # TODO: inverse diffusion process with for loop
+        # TODO (SOLVED): inverse diffusion process with for loop
         for t in self.progress_bar(self.scheduler.timesteps):
             
-            # NOTE: this is for CFG
+            # NOTE: this is for CFG (classifier-free guidance): it lets you ask for a specific class (“malamute”) and steer the sampling toward it. With classes=None, the code skips all of it,
             if use_guidance:
-                # TODO: implement cfg
-                model_input = None 
-                c = None 
+                # TODO (SOLVED): implement cfg
+                # Stack uncond and cond along the batch axis so one UNet call yields both
+                # predictions. Order matters: [uncond, cond] must match chunk(2) below.
+                model_input = torch.cat([image, image])
+                c = torch.cat([uncond_embeds, class_embeds])
             else:
-                model_input = None 
+                model_input = image
                 # A scale of 1 uses the conditional prediction without CFG mixing.
                 c = class_embeds if classes is not None else None
             
-            # TODO: 1. predict noise model_output
-            model_output = None
+            # TODO (SOLVED): 1. predict noise model_output
+            # t is a 0-dim tensor; UNet.forward broadcasts it across the batch.
+            model_output = self.unet(model_input, t, c=c)
             
             if use_guidance:
-                # TODO: implement cfg
+                # TODO (SOLVED): implement cfg
                 uncond_model_output, cond_model_output = model_output.chunk(2)
-                model_output = None
+                # Eq. 10: eps_hat = eps_uncond + w * (eps_cond - eps_uncond)
+                model_output = uncond_model_output + guidance_scale * (cond_model_output - uncond_model_output)
             
-            # TODO: 2. compute previous image: x_t -> x_t-1 using scheduler
-            image = None 
+            # TODO (SOLVED): 2. compute previous image: x_t -> x_t-1 using scheduler
+            # Pass the same generator as the initial noise so a seed reproduces the sample.
+            image = self.scheduler.step(model_output, t, image, generator=generator)
             
-        
         # NOTE: this is for latent DDPM
         # TODO: use VQVAE to get final image
-        if self.vae is not None:
+        if self.vae is not None: #The VAE is a pretrained network that compresses a 128×128 image into a small “latent” image. Latent DDPM runs the diffusion on those small images and decodes at the end
             # NOTE: remember to rescale your images
-            image = None 
-            # TODO: clamp your images values
-            image = None 
+            # Undo the 0.1845 scaling applied after encoding in train.py, then decode.
+            image = image / 0.1845
+            image = self.vae.decode(image)
+            # TODO (SOLVED): clamp your images values
+            # The decoder output can slightly exceed [-1, 1].
+            image = image.clamp(-1, 1)
         
-        # TODO: return final image, re-scale to [0, 1]
-        image = None 
+        # TODO (SOLVED): return final image, re-scale to [0, 1]
+        # Model works in [-1, 1]; numpy_to_pil expects [0, 1].
+        image = (image / 2 + 0.5).clamp(0, 1)
         
         # convert to PIL images
         image = image.cpu().permute(0, 2, 3, 1).numpy()
