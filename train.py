@@ -33,6 +33,7 @@ def parse_args(argv=None):
 
     # data 
     parser.add_argument("--data_dir", type=str, default='./data/imagenet100_128x128/train', help="data folder") 
+    parser.add_argument("--val_dir", type=str, default=None, help="validation folder for FID (defaults to a 'validation' or 'val' folder next to data_dir)")
     parser.add_argument("--image_size", type=int, default=128, help="image size")
     parser.add_argument("--batch_size", type=int, default=4, help="per gpu batch size")
     parser.add_argument("--num_workers", type=int, default=8, help="batch size")
@@ -80,6 +81,8 @@ def parse_args(argv=None):
     
     # checkpoint path for inference
     parser.add_argument("--ckpt", type=str, default=None, help="checkpoint path for inference")
+    parser.add_argument("--eval_real", type=str2bool, default=False, help="inference.py: skip sampling and score real train images against validation (sanity check for FID/IS)")
+    parser.add_argument("--num_eval_images", type=int, default=5000, help="number of images to generate for FID/IS")
     
     # first parse of command-line args to check for config file
     args = parser.parse_args(argv)
@@ -157,21 +160,30 @@ def main():
     
     # setup dataset
     logger.info("Creating dataset")
-    # TODO: use transform to normalize your images to [-1, 1]
-    # TODO: you can also use horizontal flip
-    transform = None 
-    # TOOD: use image folder for your train dataset
-    train_dataset = None 
+    # normalize images to [-1, 1], with random horizontal flips as augmentation
+    transform = transforms.Compose([
+        transforms.Resize(args.image_size),
+        transforms.CenterCrop(args.image_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+    ])
+    train_dataset = datasets.ImageFolder(args.data_dir, transform=transform)
     
-    # TODO: setup dataloader
     sampler = None 
     if args.distributed:
-        # TODO: distributed sampler
-        sampler =None 
-    # TODO: shuffle
+        sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
     shuffle = False if sampler else True
-    # TODO dataloader
-    train_loader = None 
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+        persistent_workers=args.num_workers > 0,
+    )
     if train_dataset is None or train_loader is None:
         raise NotImplementedError("Complete the dataset and dataloader TODOs in train.py before training.")
     
@@ -199,8 +211,19 @@ def main():
     num_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     logger.info(f"Number of parameters: {num_params / 10 ** 6:.2f}M")
     
-    # TODO: ddpm shceduler
-    scheduler = DDPMScheduler(None)
+    # ddpm scheduler
+    scheduler_kwargs = dict(
+        num_train_timesteps=args.num_train_timesteps,
+        num_inference_steps=args.num_inference_steps,
+        beta_start=args.beta_start,
+        beta_end=args.beta_end,
+        beta_schedule=args.beta_schedule,
+        variance_type=args.variance_type,
+        prediction_type=args.prediction_type,
+        clip_sample=args.clip_sample,
+        clip_sample_range=args.clip_sample_range,
+    )
+    scheduler = DDPMScheduler(**scheduler_kwargs)
     
     # NOTE: this is for latent DDPM 
     vae = None
@@ -224,14 +247,24 @@ def main():
     if class_embedder:
         class_embedder = class_embedder.to(device)
     
-    # TODO: setup optimizer
-    optimizer = None 
-    # TODO: optionally set up a learning-rate scheduler; keep the diffusion scheduler above.
-    lr_scheduler = None
+    # optimizer over the unet (and class embedder for cfg)
+    params = list(unet.parameters())
+    if class_embedder is not None:
+        params += list(class_embedder.parameters())
+    optimizer = torch.optim.AdamW(params, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # max train steps
     num_update_steps_per_epoch = len(train_loader)
     args.max_train_steps = args.num_epochs * num_update_steps_per_epoch
+    
+    # cosine decay over the whole run; the diffusion scheduler above is separate
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.max_train_steps, eta_min=args.learning_rate * 0.01)
+    
+    # mixed precision
+    amp_dtype = {'fp16': torch.float16, 'bf16': torch.bfloat16}.get(args.mixed_precision)
+    use_amp = amp_dtype is not None and device.type == 'cuda'
+    grad_scaler = torch.amp.GradScaler('cuda', enabled=use_amp and amp_dtype == torch.float16)
     
     #  setup distributed training
     class_embedder_wo_ddp = class_embedder
@@ -247,15 +280,13 @@ def main():
         unet_wo_ddp = unet
         class_embedder_wo_ddp = class_embedder
     vae_wo_ddp = vae
-    # TODO: setup ddim
     if args.use_ddim:
-        scheduler_wo_ddp = DDIMScheduler(None)
+        scheduler_wo_ddp = DDIMScheduler(**scheduler_kwargs).to(device)
     else:
         scheduler_wo_ddp = scheduler
     
-    # TODO: setup evaluation pipeline
     # NOTE: this pipeline is not differentiable and only for evaluatin
-    pipeline = DDPMPipeline(None)
+    pipeline = DDPMPipeline(unet=unet_wo_ddp, scheduler=scheduler_wo_ddp, vae=vae_wo_ddp, class_embedder=class_embedder_wo_ddp)
     
     
     # dump config file
@@ -301,21 +332,18 @@ def main():
         
         loss_m = AverageMeter()
         
-        # TODO: set unet and scheduelr to train
-        unet
-        scheduler 
+        unet.train()
+        scheduler.train()
         if class_embedder is not None:
             class_embedder.train()
         
         
-        # TODO: finish this
         for step, (images, labels) in enumerate(train_loader):
             
             batch_size = images.size(0)
             
-            # TODO: send to device
-            images = None 
-            labels = None 
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
             
             
             # NOTE: this is for latent DDPM 
@@ -325,7 +353,7 @@ def main():
                 # NOTE: do not change  this line, this is to ensure the latent has unit std
                 images = images * 0.1845
             
-            # TODO: zero grad optimizer
+            optimizer.zero_grad(set_to_none=True)
             
             
             # NOTE: this is for CFG
@@ -336,35 +364,33 @@ def main():
                 # NOTE: if not cfg, set class_emb to None
                 class_emb = None
             
-            # TODO: sample noise 
-            noise = None  
+            noise = torch.randn_like(images)
             
-            # TODO: sample timestep t
-            timesteps = None 
+            timesteps = torch.randint(0, args.num_train_timesteps, (batch_size,), device=device, dtype=torch.long)
             
-            # TODO: add noise to images using scheduler
-            noisy_images = None 
+            noisy_images = scheduler.add_noise(images, noise, timesteps)
             
-            # TODO: model prediction
-            model_pred = None 
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                model_pred = unet(noisy_images, timesteps, class_emb)
             
             if args.prediction_type == 'epsilon':
                 target = noise 
+            else:
+                raise NotImplementedError(f"Prediction type {args.prediction_type} not implemented.")
             
-            # TODO: calculate loss
-            loss = None 
+            loss = F.mse_loss(model_pred.float(), target.float())
             
             # record loss
             loss_m.update(loss.item())
             
             # backward and step 
-            loss.backward()
-            # TODO: grad clip
+            grad_scaler.scale(loss).backward()
             if args.grad_clip:
-                pass 
+                grad_scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(params, args.grad_clip)
             
-            # TODO: step your optimizer
-            optimizer
+            grad_scaler.step(optimizer)
+            grad_scaler.update()
             if lr_scheduler is not None:
                 lr_scheduler.step()
             
@@ -373,7 +399,7 @@ def main():
             # logger
             if step % 100 == 0 and is_primary(args):
                 logger.info(f"Epoch {epoch+1}/{args.num_epochs}, Step {step}/{num_update_steps_per_epoch}, Loss {loss.item()} ({loss_m.avg})")
-                wandb_logger.log({'loss': loss_m.avg})
+                wandb_logger.log({'loss': loss_m.avg, 'lr': optimizer.param_groups[0]['lr']})
 
         # validation
         # send unet to evaluation mode
@@ -387,11 +413,13 @@ def main():
         if args.use_cfg:
             # random sample 4 classes
             classes = torch.randint(0, args.num_classes, (4,), device=device)
-            # TODO: fill pipeline
-            gen_images = pipeline(None) 
+            gen_images = pipeline(
+                batch_size=4, num_inference_steps=args.num_inference_steps, classes=classes,
+                guidance_scale=args.cfg_guidance_scale, generator=generator, device=device)
         else:
-            # TODO: fill pipeline
-            gen_images = pipeline(None) 
+            gen_images = pipeline(
+                batch_size=4, num_inference_steps=args.num_inference_steps,
+                generator=generator, device=device)
             
         # create a blank canvas for the grid
         grid_image = Image.new('RGB', (4 * args.image_size, 1 * args.image_size))
