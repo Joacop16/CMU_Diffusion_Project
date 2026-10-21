@@ -1,26 +1,29 @@
-# 0. Find prerequisites, then load Python
-module spider python/ondemand-jupyter-python3.10   # note any "must load first" modules
-# module load <prereqs> python/ondemand-jupyter-python3.10
-
-# 1. Folders, conda package cache, pip cache, temp dir (all on /ix1)
+#!/bin/bash
 BASE=/ix1/jmendoza-arenas/jop204
-mkdir -p $BASE/envs $BASE/conda_pkgs $BASE/pip_cache $BASE/tmp
-printf "pkgs_dirs:\n- $BASE/conda_pkgs\n" > ~/.condarc     # overwrites an existing ~/.condarc
+mkdir -p $BASE/envs $BASE/pip_cache $BASE/tmp
+
+module purge
+module load python/3.12.8          # add any prerequisite modules before this, if spider listed some
+
+export PYTHONNOUSERSITE=1
 export PIP_CACHE_DIR=$BASE/pip_cache
 export TMPDIR=$BASE/tmp
-export PYTHONNOUSERSITE=1
 
-# 2. Create and activate the environment
-conda create --prefix=$BASE/envs/ddpm python=3.12 -y
-source activate $BASE/envs/ddpm
-which python pip          # both must point inside $BASE/envs/ddpm
-python --version          # should say 3.12.x
+python --version
+python -m venv $BASE/envs/ddpm
+source $BASE/envs/ddpm/bin/activate
 
-# 3. Install PyTorch with CUDA 12.6, then the project requirements
+# Stop if the wrong Python is active
+case "$(which python)" in
+  $BASE/envs/ddpm/*) echo "Env OK: $(which python)" ;;
+  *) echo "ERROR: wrong python: $(which python)"; exit 1 ;;
+esac
+
+python -m pip install --upgrade pip
 pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu126
-cd $BASE/ddpm_project     # wherever requirements.txt lives
+
+cd $BASE/CMU_Diffusion_Project     # folder containing requirements.txt
 pip install -r requirements.txt
 
-# 4. Confirm torch was not replaced by a CPU build
 pip list 2>/dev/null | grep -Ei "^(torch|torchvision|torchmetrics|torch-fidelity) "
 python -c "import torch; print(torch.__version__, torch.version.cuda)"
