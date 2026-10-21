@@ -7,8 +7,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
-#SBATCH --time=24:00:00
-#SBATCH --qos=short
+#SBATCH --time=3-00:00:00
 #SBATCH --mail-user=jop204@pitt.edu
 #SBATCH --mail-type=FAIL,END
 #SBATCH --output=/ix1/jmendoza-arenas/jop204/CMU_Diffusion_Project/logs/%x-%j.out
