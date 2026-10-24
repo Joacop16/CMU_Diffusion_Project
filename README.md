@@ -1,13 +1,24 @@
 # IDL Fall 2026 - Guided Project: Diffusion
 
-**Midterm report:** October 23, 2026  
-**Final report:** TBD
+**Midterm:** October 23, 2026  
+**Final:** TBD
 
-There is no Kaggle competition or CSV submission this semester. Evaluate locally and include FID and IS results in your report.
+## Current Progress (October 23, 2026)
 
-# Setup and scaffold checks
+We implemented and trained an unconditional pixel-space DDPM on ImageNet-100 (128 × 128), and implemented a DDIM scheduler to reduce inference steps. The midterm evaluation uses the same checkpoint after 45 training epochs and 5,000 generated images per sampler.
 
-Use Python 3.12 and create an isolated environment:
+| Sampler | Steps | FID ↓ | IS ↑ | Time / 5k images (s) |
+|---|---:|---:|---:|---:|
+| DDPM | 200 | 67.72 | 7.87 | 8,898 |
+| DDIM | 10 | 84.18 | 8.12 | 446 |
+| DDIM | 50 | 69.60 | 8.25 | 2,227 |
+| DDIM | 100 | 68.97 | 8.19 | 4,441 |
+
+The next steps are latent diffusion using the provided pre-trained VAE, classifier-free guidance, and experiments with improved noise schedules. These are **not** included in the midterm results.
+
+## Setup
+
+Use Python 3.12 from the repository root:
 
 ```bash
 python3.12 -m venv .venv
@@ -16,107 +27,42 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-The tests use small synthetic inputs on CPU. They need no dataset, pretrained weights, GPU, or W&B login. They check the provided code and command-line setup; they do not implement or grade DDPM, DDIM, VAE, CFG, or FID/IS exercises.
+Download `imagenet100_128x128.tar.gz` from the [course dataset folder](https://drive.google.com/drive/u/0/folders/1Hr8LU7HHPEad8ALmMo5cvisazsm6zE8Z), then extract it:
 
-This is an unfinished student scaffold. Fill the blank entries in `configs/ddpm.yaml` and complete the code TODOs before running training or inference. The untouched config intentionally stops with a list of missing values. For setup help, both `python train.py --help` and `python inference.py --help` should run.
-
-# Starter Code Usage
-
-The commands below apply **after completing the relevant TODOs**. CUDA is selected when available; use `--device cpu` for small debugging runs. Full training is intended for a GPU. Set `WANDB_MODE=disabled` to run without a W&B account.
-
-**Training**
-
+```bash
+mkdir -p data
+tar -xzf imagenet100_128x128.tar.gz -C data
 ```
+
+The expected folders are `data/imagenet100_128x128/train/` and `data/imagenet100_128x128/validation/` (100 classes; 130,000 training and 5,000 validation images). The configuration is in `configs/ddpm.yaml`.
+
+## Training
+
+Training requires a suitable GPU. To train the pixel-space baseline:
+
+```bash
 python train.py --config configs/ddpm.yaml
 ```
 
-**Inference and Evaluating**
+The default configuration specifies 50 epochs; the midterm report evaluates the checkpoint saved after **45 completed epochs**. On the Pittsburgh CRC cluster, the project also provides `CRC_train.sh` (with cluster-specific paths and environment settings).
 
-```
-python inference.py --config configs/ddpm.yaml --ckpt /path/to/checkpoint
-```
+## Inference and Evaluation
 
-# 1. Download the data
-
-Please first download the data from here: https://drive.google.com/drive/u/0/folders/1Hr8LU7HHPEad8ALmMo5cvisazsm6zE8Z
-
-Create the data directory and extract the archive with
-
-```
-mkdir -p data
-tar -xvf imagenet100_128x128.tar.gz -C data
-```
-
-# 2. Implementing DDPM from Scratch
-
-This homework will start from implementing DDPM from scratch.
-
-We provide the basic code structure for you and you will be implementing the following modules (by filling all TODOs):
-
-```
-1. pipelines/ddpm.py
-2. schedulers/scheduling_ddpm.py
-3. train.py
-4. configs/ddpm.yaml
-```
-
-A very basic U-Net architecture is provided to you, and you will need to improve the architecture for better performance.
-
-# 3. Implementing DDIM
-
-Implement the DDIM from scratch:
-
-```
-1. schedulers/scheduling_ddim.py
-2. create a config with ddim by setting use_ddim to True
-```
-
-**NOTE: you need to set use_ddim to TRUE**
-
-# 4. Implementing Latent DDPM
-
-Implement the Latent DDPM.
-
-The VAE modules are provided. The pretrained VAE checkpoint is an external prerequisite.
-
-[Download the pretrained VAE checkpoint](https://drive.google.com/file/d/1KSdtgHVOADazaZE2XflA61zw97iTKiRe/view) and save it as `pretrained/model.ckpt` (create the `pretrained` directory if needed). The checkpoint is not included in this package. Latent DDPM training and inference require it.
-
-If the download is named `Model.ckpt`, rename it to lowercase `model.ckpt` when placing it in `pretrained/`.
-
-You need to implement:
-
-```
-1. models/vae.py
-2. train.py with vae related stuff
-3. pipelines/ddpm.py with vae related stuff
-```
-
-**NOTE: you need to set latent_ddpm to TRUE**
-
-# 5. Implementing CFG
-
-Implement CFG
-
-```
-1. models/class_embedder.py
-2. train.py with cfg related stuff
-3. pipelines/ddpm.py with cfg related stuff
-```
-
-**NOTE: you need to set use_cfg to TRUE**
-
-# 6. Evaluation
-
-Complete the evaluation TODOs in `inference.py`, then run:
+Specify a trained checkpoint (not included in this repository). The following commands generate 5,000 samples and compute FID/IS against the validation split:
 
 ```bash
-python inference.py --config configs/ddpm.yaml --ckpt /path/to/checkpoint
+# DDPM: 200 steps
+python inference.py --config configs/ddpm.yaml --ckpt /path/to/checkpoint_epoch_44.pth --use_ddim false --num_inference_steps 200 --batch_size 100
+
+# DDIM: 50 steps
+python inference.py --config configs/ddpm.yaml --ckpt /path/to/checkpoint_epoch_44.pth --use_ddim true --num_inference_steps 50 --batch_size 100
 ```
 
-Generate 5,000 images. With classifier-free guidance, generate 50 images for each of the 100 classes. Without classifier-free guidance, generate 5,000 unconditional images.
+Change `--num_inference_steps` to `10` or `100` for the other reported DDIM settings. The available `CRC_eval.sh` script is configured for the Pittsburgh CRC environment and needs its local paths adjusted before use elsewhere. Set `WANDB_MODE=disabled` to run without W&B logging where applicable.
 
-Use `torchmetrics` to compute FID against the validation images and IS on the generated images. Include results for DDPM, DDPM + DDIM, latent DDPM, latent DDPM with CFG, and your advanced techniques in the report.
+## Project Components
 
-# 7. Deliverables
-
-Submit your report and code, including local evaluation results. The midterm report is due **October 23, 2026** and covers DDPM and DDIM implementation and results. The final report is due **TBD** and covers all components and exploration. See the project writeup for the full requirements.
+- **DDPM:** `schedulers/scheduling_ddpm.py`, `pipelines/ddpm.py`, `models/unet.py`, `train.py`
+- **DDIM:** `schedulers/scheduling_ddim.py` (select with `--use_ddim true`)
+- **Evaluation:** `inference.py` (FID, IS, and sample grids)
+- **Final-stage work:** `models/vae.py`, `models/class_embedder.py`, and latent/CFG integration
